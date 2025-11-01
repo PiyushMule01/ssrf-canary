@@ -1,74 +1,70 @@
 # SSRF Canary
 
-A lightweight Flask-based application for detecting and monitoring Server-Side Request Forgery (SSRF) attempts through canary tokens.
+Lightweight Flask application for detecting and monitoring Server-Side Request Forgery (SSRF) by generating unique canary tokens and logging any requests made to their endpoints.
 
 ## Features
 
-- **Token Generation**: Create unique canary tokens with customizable expiration
-- **Request Monitoring**: Log all HTTP requests to canary endpoints
-- **SSRF Detection**: Automatically flag suspicious requests from private IPs or cloud metadata endpoints
-- **Multi-Channel Alerts**: Send notifications via webhook and email
-- **Rate Limiting**: Built-in protection against abuse
-- **Reverse DNS Enrichment**: Automatically resolve IP addresses to hostnames
+* Token generation with configurable expiry
+* HTTP canary endpoint that logs method, headers, body preview and requester IP
+* Heuristics to flag requests from private or cloud metadata IPs
+* Webhook and email alerting (configurable)
+* Basic rate limiting to reduce noise
+* SQLite persistence (tokens + events)
+* Simple admin endpoints for token and event management
 
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
-- Python 3.7+
-- pip
+* Python 3.7+
+* pip
 
-### Installation
+### Install & run
 
-1. Clone the repository:
+1. Clone the repo and open its folder:
+
 ```bash
-git clone https://github.com/yourusername/ssrf-canary.git
+git clone https://github.com/<your-username>/ssrf-canary.git
 cd ssrf-canary
 ```
 
-2. Install dependencies:
+2. Create and activate a virtual environment (recommended):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+3. Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file (copy from `.env.example`):
+4. Copy the example env and edit values:
+
 ```bash
 cp .env.example .env
+# edit .env -> set BASE_URL=http://localhost:8443 for local testing
 ```
 
-4. Configure your environment variables in `.env`
+5. Start the app:
 
-5. Run the application:
 ```bash
-python app.py
+python ssrf_canary_server.py
 ```
 
-The server will start on `http://0.0.0.0:8443` by default.
+Default server address: `http://0.0.0.0:8443`.
 
-## Configuration
+## API
 
-Configure the application using environment variables in your `.env` file:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DATABASE_URL` | Database connection string | `sqlite:///ssrf_canary.db` |
-| `ALERT_WEBHOOK` | Webhook URL for alerts | None |
-| `ALERT_EMAIL` | Email address for alerts | None |
-| `SMTP_HOST` | SMTP server hostname | None |
-| `SMTP_PORT` | SMTP server port | `25` |
-| `SMTP_USER` | SMTP username | None |
-| `SMTP_PASS` | SMTP password | None |
-| `APP_HOST` | Application host | `0.0.0.0` |
-| `APP_PORT` | Application port | `8443` |
-| `BASE_URL` | Base URL for canary links | `https://canary.example.com` |
-| `TOKEN_EXPIRY_SECONDS` | Default token expiration | `604800` (7 days) |
-| `RATE_LIMIT_MAX` | Max requests per window | `20` |
-| `RATE_LIMIT_WINDOW` | Rate limit window (seconds) | `60` |
-
-## API Documentation
+All endpoints return JSON.
 
 ### Create Token
-```bash
+
+**Request**
+
+```
 POST /create_token
 Content-Type: application/json
 
@@ -78,91 +74,142 @@ Content-Type: application/json
 }
 ```
 
-**Response:**
+* `owner` (string): identifier for the token (e.g., project, test name)
+* `expires_in` (integer, optional): seconds until token expiry (default 604800 = 7 days)
+
+**Important**: the request **must** include `Content-Type: application/json` and a valid JSON body. If the body is empty or not JSON, the server may respond with an error like:
+
+```json
+{ "error": "enter content" }
+```
+
+(Use `curl` or Postman with `Content-Type: application/json` to avoid this.)
+
+**Example (curl)**
+
+```bash
+curl -X POST http://localhost:8443/create_token \
+     -H "Content-Type: application/json" \
+     -d '{"owner":"project-name","expires_in":604800}'
+```
+
+**Response**
+
 ```json
 {
-  "token": "abc123...",
-  "url": "https://canary.example.com/c/abc123...",
+  "token": "a1b2c3d4e5f6...",
+  "url": "http://localhost:8443/c/a1b2c3d4e5f6...",
   "expires_at": "2025-11-02T12:00:00"
 }
 ```
 
 ### List Tokens
-```bash
+
+```
 GET /tokens
 ```
 
 ### Deactivate Token
-```bash
+
+```
 POST /tokens/{token}/deactivate
 ```
 
 ### List Events
-```bash
+
+```
 GET /events?page=1&per=50
 ```
 
-### Canary Endpoint
-```bash
+* `page` and `per` control pagination.
+
+### Canary Endpoint (what attackers call)
+
+```
 GET|POST|PUT|PATCH|DELETE /c/{token}
 ```
-All requests to this endpoint are logged and trigger alerts.
 
-## Use Cases
+All requests to this endpoint are logged as events. The server records method, headers, a short body preview, remote IP (uses `X-Forwarded-For` first if present), and flags suspicious requests based on IP heuristics.
 
-- **API Security Testing**: Embed canary URLs in API responses to detect unauthorized access
-- **SSRF Detection**: Identify applications making unintended requests to internal resources
-- **Data Exfiltration Monitoring**: Track if sensitive data is being accessed from unexpected locations
-- **Security Research**: Monitor callback attempts during penetration testing
+## Example workflow
 
-## Security Considerations
+1. Create a token:
 
-- Always use HTTPS in production
-- Keep your `.env` file secure and never commit it to version control
-- Use strong, unique tokens for sensitive deployments
-- Regularly review event logs for suspicious activity
-- Consider running behind a reverse proxy (nginx, Caddy)
-
-## Development
-
-### Database Migrations
-
-The application uses SQLAlchemy and automatically creates tables on first run. For production, consider using Alembic for migrations.
-
-### Running Tests
 ```bash
-# Coming soon
-pytest
+curl -X POST http://localhost:8443/create_token \
+     -H "Content-Type: application/json" \
+     -d '{"owner":"test"}'
 ```
+
+2. Embed the returned URL (e.g., `http://localhost:8443/c/<token>`) in an application or payload that might be SSRF-vulnerable.
+
+3. When the app/server calls that URL, the event appears:
+
+```bash
+curl http://localhost:8443/events
+```
+
+## Configuration
+
+Use `.env` (copy `.env.example`) to set:
+
+* `DATABASE_URL` — DB connection string (default uses SQLite file)
+* `BASE_URL` — public base used for building canary URLs (set to tunnel/ngrok URL if using tunnels)
+* `ALERT_WEBHOOK` — webhook URL for alerts (Slack, Teams, Discord)
+* `ALERT_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` — for email alerts
+* `APP_HOST`, `APP_PORT` — host/port to bind
+* `TOKEN_EXPIRY_SECONDS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW`
+
+## Running behind a tunnel (ngrok)
+
+Expose your local server to the internet for testing:
+
+```bash
+ngrok http 8443
+```
+
+Set `BASE_URL` in `.env` to the ngrok URL (e.g., `https://abcd1234.ngrok.io`) and re-create tokens so they show the public URL.
 
 ## Deployment
 
-### Docker
+* Use a production WSGI server (gunicorn) and a reverse proxy (nginx/Caddy) with TLS.
+* Use a production database (Postgres/MySQL) for durability.
+* Secure admin endpoints with authentication before exposing publicly.
+
+## Security & legal
+
+* Only test systems you own or have authorization to test.
+* Do not use canaries to provoke access to third-party private systems.
+* Keep `.env` out of version control.
+
+## Development
+
+* The app auto-creates DB tables on first run (SQLite by default). For production migrations use Alembic.
+* Tests: add unit tests (pytest) in `tests/` as the next step.
+
+## Docker
+
+Build:
+
 ```bash
 docker build -t ssrf-canary .
+```
+
+Run:
+
+```bash
 docker run -p 8443:8443 --env-file .env ssrf-canary
 ```
 
-### Production Considerations
-
-- Use a production-grade database (PostgreSQL, MySQL)
-- Deploy behind a reverse proxy with SSL/TLS
-- Set up proper logging and monitoring
-- Configure firewall rules appropriately
-- Use a process manager (systemd, supervisor)
-
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions welcome. Open issues or submit PRs for features such as DNS-based canaries, authentication, or improved alerting.
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT License. See `LICENSE` file.
 
-## Acknowledgments
+## Acknowledgements
 
-Built with Flask, SQLAlchemy, and ❤️ for security researchers.
+Built with Flask and SQLAlchemy — intended for authorized security research only.
 
-## Disclaimer
-
-This tool is intended for authorized security testing and monitoring only. Users are responsible for ensuring compliance with applicable laws and regulations.
